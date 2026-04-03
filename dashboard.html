@@ -29,6 +29,12 @@
           </a>
         </li>
         <li>
+          <a href="#" onclick="showSection('orders', this)">
+            <span class="nav-icon">📋</span> Orders
+            <span class="nav-badge" id="orderBadge" style="display:none"></span>
+          </a>
+        </li>
+        <li>
           <a href="https://bites-by-mena-website.vercel.app" target="_blank">
             <span class="nav-icon">🌐</span> View Website
           </a>
@@ -51,7 +57,7 @@
         </div>
         <div style="display:flex;align-items:center;gap:16px;">
           <span id="fbStatus" style="font-size:0.8rem;font-weight:500;"></span>
-          <button class="btn btn-primary" onclick="showSection('add', null); resetForm()">
+          <button id="topbarAddBtn" class="btn btn-primary" onclick="showSection('add', null); resetForm()">
             ➕ Add Product
           </button>
         </div>
@@ -176,6 +182,15 @@
           </div>
         </div>
 
+        <!-- ── Orders section ── -->
+        <div id="section-orders" class="section">
+          <div class="order-tabs">
+            <button class="tab-btn active" id="tab-pending"   onclick="showOrderTab('pending', this)">🕐 Pending <span id="pendingCount"></span></button>
+            <button class="tab-btn"        id="tab-completed" onclick="showOrderTab('completed', this)">✅ Completed</button>
+          </div>
+          <div id="ordersContainer"></div>
+        </div>
+
       </div><!-- /dash-content -->
     </div><!-- /dash-main -->
   </div><!-- /dash-wrap -->
@@ -265,6 +280,140 @@
       }
     }
 
+    // ── Orders state ──
+    let orders     = [];
+    let currentTab = 'pending';
+
+    // ── Firebase order helpers ──
+    async function fbGetOrders() {
+      const res = await fetch(`${FIREBASE_URL}/bbm_orders.json`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      if (!data) return [];
+      if (Array.isArray(data)) return data;
+      return Object.values(data);
+    }
+
+    async function fbSetOrders(data) {
+      await fetch(`${FIREBASE_URL}/bbm_orders.json`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      });
+    }
+
+    async function loadOrders() {
+      try { orders = await fbGetOrders(); } catch { orders = []; }
+      updateOrderBadge();
+    }
+
+    function updateOrderBadge() {
+      const n = orders.filter(o => o.status === 'pending').length;
+      const badge = document.getElementById('orderBadge');
+      const count = document.getElementById('pendingCount');
+      badge.textContent = n;
+      badge.style.display = n > 0 ? 'inline' : 'none';
+      if (count) count.textContent = n > 0 ? `(${n})` : '';
+    }
+
+    // ── Render orders ──
+    function renderOrders() {
+      const container = document.getElementById('ordersContainer');
+      const list = [...orders.filter(o => o.status === currentTab)]
+                     .sort((a, b) => b.id - a.id);
+
+      if (list.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <div class="empty-icon">${currentTab === 'pending' ? '🎉' : '📭'}</div>
+            <h3>${currentTab === 'pending' ? 'No pending orders' : 'No completed orders yet'}</h3>
+            <p>${currentTab === 'pending' ? 'New orders from your website will appear here.' : 'Completed orders will appear here.'}</p>
+          </div>`;
+        return;
+      }
+
+      container.innerHTML = `<div class="orders-list">${list.map(renderOrderCard).join('')}</div>`;
+    }
+
+    function renderOrderCard(o) {
+      const date = new Date(o.id).toLocaleDateString('nl-NL', {
+        day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+      });
+      const num  = String(o.id).slice(-6);
+      const isDelivery = o.delivery && o.delivery.type === 'delivery';
+
+      return `
+        <div class="order-card">
+          <div class="oc-header">
+            <div class="oc-meta">
+              <span class="oc-num">#${num}</span>
+              <span class="oc-date">${date}</span>
+            </div>
+            <span class="oc-pill ${o.status}">${o.status === 'pending' ? '🕐 Pending' : '✅ Completed'}</span>
+          </div>
+          <div class="oc-body">
+            <div>
+              <div class="oc-field-label">Customer</div>
+              <div class="oc-field-value">${o.customer.firstName} ${o.customer.lastName}</div>
+              <div class="oc-field-sub">${o.customer.email}${o.customer.phone ? ' · ' + o.customer.phone : ''}</div>
+            </div>
+            <div>
+              <div class="oc-field-label">Order</div>
+              <div class="oc-field-value">${o.product.name} × ${o.qty}</div>
+              <div class="oc-field-sub">€${parseFloat(o.product.price).toFixed(2)} ${o.product.unit || ''} · <strong>Total: €${parseFloat(o.total).toFixed(2)}</strong></div>
+            </div>
+            <div>
+              <div class="oc-field-label">Delivery</div>
+              <div class="oc-field-value">${isDelivery ? '🚚 Delivery' : '🏠 Pickup'}</div>
+              ${isDelivery && o.delivery.street ? `<div class="oc-field-sub">${o.delivery.street}, ${o.delivery.postcode} ${o.delivery.city}</div>` : ''}
+            </div>
+          </div>
+          ${o.notes ? `<div class="oc-notes"><strong>Notes:</strong> ${o.notes}</div>` : ''}
+          <div class="oc-footer">
+            ${o.status === 'pending'
+              ? `<button class="btn btn-primary btn-sm" onclick="markOrderComplete(${o.id})">✅ Mark Complete</button>`
+              : `<button class="btn btn-outline btn-sm" onclick="markOrderPending(${o.id})">↩ Mark Pending</button>`}
+            <button class="btn btn-danger btn-sm" onclick="deleteOrder(${o.id})">🗑️</button>
+          </div>
+        </div>`;
+    }
+
+    function showOrderTab(tab, el) {
+      currentTab = tab;
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      el.classList.add('active');
+      renderOrders();
+    }
+
+    async function markOrderComplete(id) {
+      const o = orders.find(o => o.id === id);
+      if (!o) return;
+      o.status = 'completed';
+      await fbSetOrders(orders);
+      updateOrderBadge();
+      renderOrders();
+      showToast('✅ Order marked as complete!', 'success');
+    }
+
+    async function markOrderPending(id) {
+      const o = orders.find(o => o.id === id);
+      if (!o) return;
+      o.status = 'pending';
+      await fbSetOrders(orders);
+      updateOrderBadge();
+      renderOrders();
+      showToast('↩ Order moved back to pending', 'success');
+    }
+
+    async function deleteOrder(id) {
+      if (!confirm('Delete this order? This cannot be undone.')) return;
+      orders = orders.filter(o => o.id !== id);
+      await fbSetOrders(orders);
+      updateOrderBadge();
+      renderOrders();
+      showToast('🗑️ Order deleted', 'success');
+    }
+
     // ── Navigation ──
     function showSection(name, linkEl) {
       document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -276,11 +425,14 @@
       const titles = {
         products: ['Products', 'Manage your cookies'],
         add:      ['Add Product', 'Fill in the details below'],
+        orders:   ['Orders', 'Track all incoming orders'],
       };
       document.getElementById('topbarTitle').textContent = titles[name][0];
       document.getElementById('topbarSub').textContent   = titles[name][1];
+      document.getElementById('topbarAddBtn').style.display = name === 'orders' ? 'none' : '';
 
       if (name === 'products') renderProducts();
+      if (name === 'orders')   loadOrders().then(() => renderOrders());
     }
 
     function logout() {
@@ -484,6 +636,7 @@
 
     // ── Init ──
     loadProducts().then(data => { products = data; renderProducts(); });
+    loadOrders();
   </script>
 
 </body>
